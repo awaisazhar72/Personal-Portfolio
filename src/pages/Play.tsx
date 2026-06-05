@@ -35,8 +35,6 @@ interface ChatMessage {
   content: string;
 }
 
-// API key is now handled server-side in api/chat.js
-
 const SYSTEM_PROMPT = `
 You are Awais Azhar, a passionate Full-Stack Developer from Pakistan. You are chatting with visitors on your personal portfolio website as yourself.
 
@@ -124,15 +122,60 @@ const Play = () => {
 
   useEffect(() => {
     const initEngine = async () => {
-      redoxchessRef.current = new RedoxChessEngine();
-      await redoxchessRef.current.init();
+      try {
+        redoxchessRef.current = new RedoxChessEngine();
+        await redoxchessRef.current.init();
+      } catch (error) {
+        console.error('Failed to initialize chess engine:', error);
+      }
     };
     initEngine();
     return () => {
-      redoxchessRef.current?.quit();
+      if (redoxchessRef.current) {
+        redoxchessRef.current.quit();
+      }
     };
   }, []);
 
+  // FIX #1: Using useCallback for makeMove to prevent dependency issues
+  const makeMove = useCallback((from: Square, to: Square) => {
+    setGame(prevGame => {
+      try {
+        const gameCopy = new Chess(prevGame.fen());
+        const move = gameCopy.move({ from, to, promotion: 'q' });
+
+        if (move) {
+          if (move.captured) {
+            if (move.color === 'w') {
+              setCapturedBlack(prev => [...prev, move.captured!]);
+            } else {
+              setCapturedWhite(prev => [...prev, move.captured!]);
+            }
+          }
+
+          setMoveHistory(prev => [...prev, {
+            from: move.from,
+            to: move.to,
+            piece: move.piece,
+            captured: move.captured,
+            san: move.san
+          }]);
+
+          setLastMove({ from, to });
+          setSelectedSquare(null);
+          setPossibleMoves([]);
+          return gameCopy;
+        }
+        return prevGame;
+      } catch {
+        setSelectedSquare(null);
+        setPossibleMoves([]);
+        return prevGame;
+      }
+    });
+  }, []);
+
+  // FIX #2: Now makeMove is properly in dependency array
   useEffect(() => {
     if (game.turn() === 'b' && !game.isGameOver() && redoxchessRef.current) {
       setEngineThinking(true);
@@ -144,7 +187,7 @@ const Play = () => {
         setEngineThinking(false);
       }, 12);
     }
-  }, [game]);
+  }, [game, makeMove]);
 
   const getPieceAt = (square: Square): { type: PieceSymbol; color: Color } | null => {
     return game.get(square) || null;
@@ -154,63 +197,23 @@ const Play = () => {
     if (engineThinking || game.turn() !== 'w') return;
     const piece = getPieceAt(square);
 
-    // If a piece is already selected
     if (selectedSquare) {
-      // Try to make a move
       if (possibleMoves.includes(square)) {
         makeMove(selectedSquare, square);
       } else if (piece && piece.color === game.turn()) {
-        // Select a different piece of the same color
         setSelectedSquare(square);
         const moves = game.moves({ square, verbose: true });
         setPossibleMoves(moves.map(m => m.to as Square));
       } else {
-        // Deselect
         setSelectedSquare(null);
         setPossibleMoves([]);
       }
     } else {
-      // Select a piece if it's the current player's turn
       if (piece && piece.color === game.turn()) {
         setSelectedSquare(square);
         const moves = game.moves({ square, verbose: true });
         setPossibleMoves(moves.map(m => m.to as Square));
       }
-    }
-  };
-
-  const makeMove = (from: Square, to: Square) => {
-    try {
-      const gameCopy = new Chess(game.fen());
-      const move = gameCopy.move({ from, to, promotion: 'q' }); // Auto-promote to queen
-
-      if (move) {
-        // Update captured pieces
-        if (move.captured) {
-          if (move.color === 'w') {
-            setCapturedBlack(prev => [...prev, move.captured!]);
-          } else {
-            setCapturedWhite(prev => [...prev, move.captured!]);
-          }
-        }
-
-        // Update move history
-        setMoveHistory(prev => [...prev, {
-          from: move.from,
-          to: move.to,
-          piece: move.piece,
-          captured: move.captured,
-          san: move.san
-        }]);
-
-        setLastMove({ from: from, to: to });
-        setGame(gameCopy);
-        setSelectedSquare(null);
-        setPossibleMoves([]);
-      }
-    } catch {
-      setSelectedSquare(null);
-      setPossibleMoves([]);
     }
   };
 
@@ -227,7 +230,6 @@ const Play = () => {
   };
 
   const flipBoard = () => {
-    // If game is in progress, ask to start new game
     if (moveHistory.length > 0) {
       if (window.confirm('Start new game?')) {
         resetGame();
@@ -238,44 +240,48 @@ const Play = () => {
     setBoardFlipped(!boardFlipped);
   };
 
+  // FIX #3: Fixed message duplication and improved chat logic
   const sendMessage = async () => {
     if (!chatInput.trim()) return;
 
     const userMessage: ChatMessage = { role: 'user', content: chatInput };
-    setChatMessages(prev => [...prev, userMessage]);
+    const updatedMessages = [...chatMessages, userMessage];
+    
+    setChatMessages(updatedMessages);
     setChatInput('');
     setIsTyping(true);
 
     try {
-      const messages = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...chatMessages.filter(m => m.role !== 'system').map(m => ({
-          role: m.role,
-          content: m.content
-        })),
-        { role: 'user', content: chatInput }
-      ];
-
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: messages,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            ...updatedMessages.map(m => ({
+              role: m.role,
+              content: m.content
+            }))
+          ],
         }),
       });
 
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
       const data = await response.json();
 
-      if (data.choices && data.choices[0]?.message?.content) {
+      if (data.choices?.[0]?.message?.content) {
         const assistantMessage: ChatMessage = {
           role: 'assistant',
           content: data.choices[0].message.content
         };
         setChatMessages(prev => [...prev, assistantMessage]);
       } else {
-        throw new Error('Invalid response');
+        throw new Error('Invalid response format');
       }
     } catch (error) {
       console.error('Chat error:', error);
@@ -334,7 +340,6 @@ const Play = () => {
 
   return (
     <div className="play-page">
-      {/* Header */}
       <div className="play-header">
         <Link to="/" className="back-button" data-cursor="disable">
           ← Back to Home
@@ -342,7 +347,6 @@ const Play = () => {
       </div>
 
       <div className="chess-container">
-        {/* Chat Panel - Left Side */}
         <div className="chat-panel">
           <div className="chat-header">
             <span className="chat-title">💬 Talk with me</span>
@@ -377,9 +381,7 @@ const Play = () => {
           </div>
         </div>
 
-        {/* Board Section with Player Labels */}
         <div className="chess-board-section">
-          {/* Opponent Info - Top of Board */}
           <div className="player-bar opponent-bar">
             <div className="player-info">
               <div className="player-avatar">
@@ -395,7 +397,6 @@ const Play = () => {
             </div>
           </div>
 
-          {/* Chess Board */}
           <div className="chess-board-wrapper">
             <div className="chess-board">
               {ranks.map((rank) => (
@@ -418,7 +419,6 @@ const Play = () => {
                       onClick={() => handleSquareClick(square)}
                       data-cursor="disable"
                     >
-                      {/* Coordinate labels */}
                       {file === (boardFlipped ? 'h' : 'a') && (
                         <span className="coord-rank">{rank}</span>
                       )}
@@ -426,10 +426,8 @@ const Play = () => {
                         <span className="coord-file">{file}</span>
                       )}
 
-                      {/* Piece */}
                       {renderPiece(piece)}
 
-                      {/* Possible move indicator */}
                       {isPossibleMove && (
                         <div className={`move-indicator ${piece ? 'capture' : ''}`} />
                       )}
@@ -440,7 +438,6 @@ const Play = () => {
             </div>
           </div>
 
-          {/* Player Info - Bottom of Board */}
           <div className="player-bar player-bar-bottom">
             <div className="player-info">
               <div className="player-avatar">
@@ -457,14 +454,11 @@ const Play = () => {
           </div>
         </div>
 
-        {/* Right Panel - Controls & Move History */}
         <div className="chess-side-panel right-panel">
-          {/* Game Status */}
           <div className="game-status">
             <span className={game.isCheck() ? 'check' : ''}>{gameStatus}</span>
           </div>
 
-          {/* Move History */}
           <div className="move-history">
             <div className="move-history-header">Moves</div>
             <div className="move-history-list">
@@ -478,7 +472,6 @@ const Play = () => {
             </div>
           </div>
 
-          {/* Controls */}
           <div className="game-controls">
             <button onClick={resetGame} className="control-btn" data-cursor="disable">
               New Game

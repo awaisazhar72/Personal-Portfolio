@@ -27,3 +27,28 @@ dist-ssr
 backup/
 .env
 redoxchess-engine/
+
+# Existing content ke baad ye add karo:
+
+# 3D Model Files
+*.obj
+*.fbx
+*.gltf
+*.glb
+*.blend
+*.dae
+*.stl
+*.3ds
+*.iges
+*.iges
+
+# Large files
+*.mp4
+*.mov
+*.mkv
+*.iso
+
+# Node modules
+node_modules/
+.next/
+dist/
